@@ -1,0 +1,17 @@
+name: 'Docker Hub mirror'
+description: >
+  Points the runner's Docker daemon at Google's pull-through cache
+  (mirror.gcr.io) so Docker Hub library images (e.g. postgres) pull reliably
+  when Docker Hub is rate-limited or unreachable. On a mirror miss dockerd
+  falls back to Docker Hub, so this is safe for namespaced images too.
+  Pair with TESTCONTAINERS_RYUK_DISABLED=true to drop the reaper pull entirely.
+
+runs:
+  using: composite
+  steps:
+    - name: Configure Docker Hub mirror
+      shell: bash
+      run: |
+        sudo mkdir -p /etc/docker
+        echo '{"registry-mirrors":["https://mirror.gcr.io"]}' | sudo tee /etc/docker/daemon.json
+        sudo systemctl restart docker

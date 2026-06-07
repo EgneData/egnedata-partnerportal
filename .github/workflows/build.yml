@@ -67,8 +67,13 @@ jobs:
   test-server:
     name: Server build & test
     runs-on: ubuntu-latest
+    env:
+      TESTCONTAINERS_RYUK_DISABLED: "true"
     steps:
       - uses: actions/checkout@v6
+
+      - name: Configure Docker Hub mirror
+        uses: ./.github/actions/dockerhub-mirror
 
       - uses: actions/setup-java@v5
         with:
@@ -201,6 +206,9 @@ jobs:
     needs: [test-server, test-intermediate]
     steps:
       - uses: actions/checkout@v6
+
+      - name: Configure Docker Hub mirror
+        uses: ./.github/actions/dockerhub-mirror
 
       - uses: actions/setup-java@v5
         with:
