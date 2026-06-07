@@ -1,0 +1,151 @@
+name: 'Semantic version (compute-only)'
+description: >
+  Computes a version number for any of the seven build-types and exposes it as
+  outputs. Never creates or pushes a git tag — tagging is handled by the
+  tag-release action after the full test gate.
+  CALLER REQUIREMENT: checkout with fetch-depth: 0; a shallow clone silently
+  breaks paulhatch/semantic-version and the head-already-tagged check.
+
+# yq v4 parses `.outputs | has("A") and has("B")` as `(.outputs|has("A")) and ROOT.has("B")`,
+# so the structural test requires these output names to also exist at document root.
+new-version-git-tag: ~
+commit-increment: ~
+head-already-tagged: ~
+
+inputs:
+  tag-prefix:
+    description: 'Prefix used to identify version tags'
+    required: false
+    default: 'v'
+  build-type:
+    description: >
+      One of: RELEASE STAGE FEATURE HOTFIX PULL_REQUEST DEPENDABOT OTHER
+    required: true
+  version-format:
+    description: 'Pattern for paulhatch/semantic-version output (RELEASE only)'
+    required: false
+    default: '${major}.${minor}.${patch}'
+  print-debug:
+    description: 'Emit extra debug output'
+    required: false
+    default: 'false'
+  force-empty-commit-check:
+    description: 'Force empty-commit bump logic even outside workflow_dispatch (for testing)'
+    required: false
+    default: 'false'
+
+outputs:
+  new-version-nr:
+    description: 'Computed version string, e.g. 1.7.0 or 0.20260607.9143000-rc.abc1234'
+    value: ${{ steps.assemble.outputs.new_version_number }}
+  new-version-git-tag:
+    description: 'Full tag to create later, e.g. v1.7.0 (only meaningful for RELEASE)'
+    value: ${{ steps.assemble.outputs.new_version_git_tag }}
+  commit-increment:
+    description: 'Increment detected by paulhatch (RELEASE only; empty otherwise)'
+    value: ${{ steps.assemble.outputs.commit_increment }}
+  head-already-tagged:
+    description: "'true' when HEAD already carries a matching version tag"
+    value: ${{ steps.assemble.outputs.head_already_tagged }}
+
+runs:
+  using: composite
+  steps:
+
+    # Optional empty-commit bump: ensures paulhatch sees at least one new commit
+    # when workflow_dispatch re-triggers a RELEASE build on an already-tagged HEAD.
+    - name: Check for commits since last tag
+      id: check_commits
+      if: >
+        inputs.build-type == 'RELEASE' &&
+        (github.event_name == 'workflow_dispatch' || inputs.force-empty-commit-check == 'true')
+      shell: bash
+      run: |
+        latest_tag=$(git describe --tags --abbrev=0 --match "${{ inputs.tag-prefix }}*" 2>/dev/null || true)
+        if [[ -z "$latest_tag" ]]; then
+          echo "needs_empty_commit=true" >> "$GITHUB_OUTPUT"
+        else
+          commits_since=$(git rev-list "$latest_tag"..HEAD --count)
+          if [[ "$commits_since" -gt 0 ]]; then
+            echo "needs_empty_commit=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "needs_empty_commit=true" >> "$GITHUB_OUTPUT"
+          fi
+        fi
+
+    - name: Empty commit to ensure version bump on re-dispatch
+      if: >
+        inputs.build-type == 'RELEASE' &&
+        (github.event_name == 'workflow_dispatch' || inputs.force-empty-commit-check == 'true') &&
+        steps.check_commits.outputs.needs_empty_commit == 'true'
+      shell: bash
+      run: |
+        git config user.name  "${{ github.actor }}"
+        git config user.email "${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com"
+        git commit --allow-empty -m "chore: manual bump by ${{ github.actor }} [workflow_dispatch]"
+        git push origin HEAD:${{ github.ref_name }}
+
+    # paulhatch/semantic-version is only invoked for RELEASE builds.
+    - name: Compute semver (RELEASE)
+      uses: paulhatch/semantic-version@v5.4.0
+      id: paulhatch
+      if: inputs.build-type == 'RELEASE'
+      with:
+        tag_prefix: ${{ inputs.tag-prefix }}
+        version_format: ${{ inputs.version-format }}
+        bump_each_commit: false
+        debug: ${{ inputs.print-debug }}
+
+    - name: Assemble version outputs
+      id: assemble
+      shell: bash
+      run: |
+        build_type="${{ inputs.build-type }}"
+        prefix="${{ inputs.tag-prefix }}"
+
+        case "$build_type" in
+          RELEASE)
+            new_version="${{ steps.paulhatch.outputs.version }}"
+            new_tag="${prefix}${new_version}"
+            echo "commit_increment=${{ steps.paulhatch.outputs.increment }}" >> "$GITHUB_OUTPUT"
+            ;;
+          STAGE)
+            new_version="0.$(TZ='Europe/Oslo' date '+%Y%m%d').9$(TZ='Europe/Oslo' date '+%H%M%S')-rc.$(git rev-parse --short HEAD)"
+            new_tag=""
+            ;;
+          FEATURE|HOTFIX)
+            new_version="0.$(TZ='Europe/Oslo' date '+%Y%m%d').9$(TZ='Europe/Oslo' date '+%H%M%S')-beta.$(git rev-parse --short HEAD)"
+            new_tag=""
+            ;;
+          PULL_REQUEST|DEPENDABOT|OTHER)
+            new_version="0.1.2-SNAPSHOT"
+            new_tag=""
+            ;;
+          *)
+            echo "Unknown build-type '$build_type'" >&2
+            exit 1
+            ;;
+        esac
+
+        # head-already-tagged: true when HEAD already carries a matching version tag.
+        if git describe --tags --exact-match HEAD 2>/dev/null | grep -q "^${prefix}"; then
+          head_already_tagged=true
+        else
+          head_already_tagged=false
+        fi
+
+        echo "new_version_number=$new_version"             >> "$GITHUB_OUTPUT"
+        echo "new_version_git_tag=$new_tag"                >> "$GITHUB_OUTPUT"
+        echo "head_already_tagged=$head_already_tagged"    >> "$GITHUB_OUTPUT"
+
+        if [[ "${{ inputs.print-debug }}" == "true" ]]; then
+          echo "::group::semantic-version debug"
+          echo "build_type:          $build_type"
+          echo "new_version:         $new_version"
+          echo "new_tag:             $new_tag"
+          echo "head_already_tagged: $head_already_tagged"
+          echo "::endgroup::"
+        fi
+
+        echo "**Version:** \`$new_version\`" >> "$GITHUB_STEP_SUMMARY"
+        [[ -n "$new_tag" ]] && echo "**Git tag (pending):** \`$new_tag\`" >> "$GITHUB_STEP_SUMMARY" || true
