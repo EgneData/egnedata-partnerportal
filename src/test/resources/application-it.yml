@@ -1,0 +1,4 @@
+partnerportal:
+  security:
+    issuer-mtls: false
+    admin-mtls: false

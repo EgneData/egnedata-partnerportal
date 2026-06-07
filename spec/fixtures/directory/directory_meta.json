@@ -1,0 +1,33 @@
+{
+  "pinned_root": {
+    "threshold": 2,
+    "root_keys": [
+      "root_a",
+      "root_b",
+      "root_c"
+    ]
+  },
+  "verifier_ids": {
+    "alice": "c8ea8c7380fca25e295df2067404b036",
+    "bob": "f7a32e82b02dca75d90dbdc18b825174",
+    "charlie": "c8f5cdfc3c451cd2bfaa128bd9e06d77"
+  },
+  "issuer_id_hex": "01941f297c0070509050505050505050",
+  "key_ids": {
+    "alice_enc": "d06d966c0744a06b5cf1d68c583d2217",
+    "alice_auth": "6a3803d5f059902a1c6dafbc9ba47292",
+    "bob_enc": "7939aa6adf910037eb7f9ff105dd19d4",
+    "bob_auth": "c5b940ed3f65c391965de8295fc5d25f",
+    "charlie_enc": "01fb3e38de5c0fbffe182ab420ea5319",
+    "acme_sign": "7599776c3085e3f9da0d13071eb0b4ab",
+    "wrong_issuer": "fe812c12f3ab4ce6ac5db69ac352f906",
+    "root_a": "730a5edc28c2f8daf2d9dce3a01d5f20",
+    "root_b": "c7b9b30e8b344118e2cf93b98c6b59b7",
+    "root_c": "1a6637539bfe7d38af34872efcfdb6dd",
+    "intermediate_sign": "7c43b35c4bd15e85e504bfab0807c6ff",
+    "mobile_install_sign": "9c1165e101c1bae257f9c91a94fbb517",
+    "wrong_intermediate": "24b03a0e3818a49e05631efc80768d08"
+  },
+  "acme_signing_key_valid_from": 1735600000000,
+  "acme_signing_key_valid_until": 1767225600000
+}

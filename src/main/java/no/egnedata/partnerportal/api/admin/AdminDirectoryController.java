@@ -1,0 +1,128 @@
+package no.egnedata.partnerportal.api.admin;
+
+import no.egnedata.partnerportal.audit.AuditService;
+import no.egnedata.datawallet.directory.DirectoryRecord;
+import no.egnedata.datawallet.directory.DirectoryRecordCodec;
+import no.egnedata.datawallet.directory.DirectoryRecordVerifier;
+import no.egnedata.datawallet.directory.DirectoryRejection;
+import no.egnedata.datawallet.directory.PinnedRootHolder;
+import no.egnedata.partnerportal.domain.DirectoryRecordEntity;
+import no.egnedata.partnerportal.domain.DirectoryRecordRepository;
+import no.egnedata.partnerportal.security.AdminPrincipalResolver;
+import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.nio.ByteBuffer;
+import java.time.Instant;
+import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
+
+@RestController
+@RequestMapping("/v1/admin")
+public class AdminDirectoryController {
+
+    private final AdminPrincipalResolver adminPrincipalResolver;
+    private final DirectoryRecordVerifier verifier;
+    private final DirectoryRecordCodec codec;
+    private final PinnedRootHolder pinnedRootHolder;
+    private final DirectoryRecordRepository repository;
+    private final AuditService auditService;
+
+    public AdminDirectoryController(AdminPrincipalResolver adminPrincipalResolver,
+                                     DirectoryRecordVerifier verifier,
+                                     DirectoryRecordCodec codec,
+                                     PinnedRootHolder pinnedRootHolder,
+                                     DirectoryRecordRepository repository,
+                                     AuditService auditService) {
+        this.adminPrincipalResolver = adminPrincipalResolver;
+        this.verifier = verifier;
+        this.codec = codec;
+        this.pinnedRootHolder = pinnedRootHolder;
+        this.repository = repository;
+        this.auditService = auditService;
+    }
+
+    @PostMapping(value = "/directory", consumes = "application/cbor")
+    @Transactional
+    public ResponseEntity<Map<String, String>> publish(@RequestBody byte[] body, HttpServletRequest request) {
+        adminPrincipalResolver.resolve(request).orElseThrow(AdminUnauthorized::new);
+
+        DirectoryRecordVerifier.ParentLookup parentLookup = parentKeyId ->
+                repository.findByKeyId(parentKeyId).stream()
+                        .map(DirectoryRecordEntity::getSignedRecord)
+                        .findFirst()
+                        .orElseThrow(() -> new DirectoryRejection.ParentNotFound(
+                                "No directory record found for parent_key_id"));
+
+        DirectoryRecord record = verifier.verify(body, pinnedRootHolder.get(), parentLookup);
+
+        UUID subjectId = bytesToUuid(record.subjectId());
+        DirectoryRecordEntity.DirectoryRecordId pk =
+                new DirectoryRecordEntity.DirectoryRecordId(record.recordType(), subjectId, record.keyId());
+
+        byte[] rootKeyId = record.parentKeyId() == null
+                ? record.rootSignatures().getFirst().rootKeyId()
+                : null;
+        byte[] parentKeyId = record.parentKeyId();
+
+        Optional<DirectoryRecordEntity> existing = repository.findById(pk);
+
+        if (existing.isPresent()) {
+            DirectoryRecordEntity current = existing.get();
+            if (current.getIssuedAt().toEpochMilli() >= record.issuedAt()) {
+                throw new RecordStale("A fresher record already exists for this key");
+            }
+            current.setStatus(record.status());
+            current.setValidFrom(Instant.ofEpochMilli(record.validFrom()));
+            current.setValidUntil(Instant.ofEpochMilli(record.validUntil()));
+            current.setIssuedAt(Instant.ofEpochMilli(record.issuedAt()));
+            current.setRootKeyId(rootKeyId);
+            current.setParentKeyId(parentKeyId);
+            current.setSignedRecord(body);
+            if ("revoked".equals(record.status())) {
+                current.setRevokedAt(Instant.now());
+                if (current.isPendingRevocation()) {
+                    current.setPendingRevocation(false);
+                }
+            }
+        } else {
+            DirectoryRecordEntity entity = new DirectoryRecordEntity(
+                    record.recordType(), subjectId, record.keyId(),
+                    record.status(),
+                    Instant.ofEpochMilli(record.validFrom()),
+                    Instant.ofEpochMilli(record.validUntil()),
+                    Instant.ofEpochMilli(record.issuedAt()),
+                    rootKeyId, parentKeyId,
+                    body
+            );
+            repository.save(entity);
+        }
+
+        auditService.recordEvent(AuditService.EventType.DIRECTORY_RECORD_PUBLISHED, null, null,
+                Map.of("record_type", record.recordType(),
+                       "subject_id", subjectId.toString(),
+                       "status", record.status()));
+
+        return ResponseEntity.status(HttpStatus.CREATED).build();
+    }
+
+    private static UUID bytesToUuid(byte[] bytes) {
+        ByteBuffer buf = ByteBuffer.wrap(bytes);
+        return new UUID(buf.getLong(), buf.getLong());
+    }
+
+    public static final class AdminUnauthorized extends RuntimeException {
+        public AdminUnauthorized() { super("Admin authentication required"); }
+    }
+
+    public static final class RecordStale extends RuntimeException {
+        public RecordStale(String msg) { super(msg); }
+    }
+}

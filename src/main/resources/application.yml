@@ -1,0 +1,34 @@
+spring:
+  application:
+    name: partnerportal
+  datasource:
+    url: ${SPRING_DATASOURCE_URL}
+    username: ${SPRING_DATASOURCE_USERNAME}
+    password: ${SPRING_DATASOURCE_PASSWORD}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+  flyway:
+    enabled: true
+
+server:
+  port: 8443
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      show-details: always
+      group:
+        readiness:
+          include: pinnedRootReadiness
+
+partnerportal:
+  web-origin: ${PARTNERPORTAL_WEB_ORIGIN:}
+  security:
+    admin-ou: ${PARTNERPORTAL_ADMIN_OU:operators}
+    issuer-mtls: true
+    admin-mtls: true

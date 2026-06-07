@@ -1,0 +1,433 @@
+package no.egnedata.partnerportal.api.entry;
+
+import no.egnedata.datawallet.crypto.Ed25519;
+import no.egnedata.datawallet.crypto.Random;
+import no.egnedata.datawallet.directory.DirectoryRecord;
+import no.egnedata.datawallet.directory.DirectoryRecordCodec;
+import no.egnedata.datawallet.directory.RootSignature;
+import no.egnedata.partnerportal.domain.DirectoryRecordEntity;
+import no.egnedata.partnerportal.domain.DirectoryRecordRepository;
+import no.egnedata.partnerportal.persistence.PostgresTestcontainer;
+import no.egnedata.partnerportal.security.BearerIssuerPrincipalResolver;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.annotation.Import;
+import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
+
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Instant;
+import java.util.Base64;
+import java.util.Collections;
+import java.util.HexFormat;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+@SpringBootTest(properties = {
+        "partnerportal.security.issuer-mtls=false",
+        "partnerportal.security.issuer-bearer.enabled=true",
+        "partnerportal.security.issuer-bearer.audience=urn:datawallet:server"
+})
+@AutoConfigureMockMvc
+@ActiveProfiles({"test", "it"})
+@Import({PostgresTestcontainer.class, FixtureIssuerKeyResolver.class})
+class EntryIngestBearerIT {
+
+    private static final Base64.Encoder B64URL = Base64.getUrlEncoder().withoutPadding();
+    private static final ObjectMapper JSON = new ObjectMapper();
+    private static final HexFormat HEX = HexFormat.of();
+
+    @Autowired private MockMvc mvc;
+    @Autowired private ObjectMapper objectMapper;
+    @Autowired private DirectoryRecordRepository directoryRecordRepository;
+    @Autowired private JdbcTemplate jdbcTemplate;
+
+    private byte[] intermediatePrivateKey;
+    private UUID installUuid;
+    private String installJkt;
+
+    private static final String ACME_ISSUER_UUID = toUuidString("01941f297c0070509050505050505050");
+    private static final String BASIC_ENTRY_ID = toUuidString("0194244fd80072428242424242424242");
+
+    @BeforeEach
+    void seedIntermediateAndInstallRecords() {
+        jdbcTemplate.update("DELETE FROM entry_recipients WHERE entry_id = ?::uuid", BASIC_ENTRY_ID);
+        jdbcTemplate.update("DELETE FROM entries WHERE entry_id = ?::uuid", BASIC_ENTRY_ID);
+        jdbcTemplate.update("DELETE FROM rate_limits");
+
+        jdbcTemplate.update("DELETE FROM directory_records WHERE record_type = 'intermediate'");
+
+        installUuid = UUID.fromString(ACME_ISSUER_UUID);
+
+        byte[] intSeed = new byte[32];
+        for (int i = 0; i < 32; i++) intSeed[i] = (byte) (i + 1);
+        Ed25519.KeyPair intKp = Ed25519.seedKeypair(intSeed);
+        intermediatePrivateKey = intKp.privateKey();
+
+        Path fixturesDir = resolveFixturesDir();
+        try {
+            JsonNode keypairsInput = JSON.readTree(fixturesDir.resolve("inputs/keypairs.json").toFile());
+            JsonNode directoryMeta = JSON.readTree(fixturesDir.resolve("directory/directory_meta.json").toFile());
+
+            byte[] acmeSeed = HEX.parseHex(keypairsInput.get("acme_sign").get("seed_hex").asText());
+            Ed25519.KeyPair acmeKp = Ed25519.seedKeypair(acmeSeed);
+            installJkt = BearerIssuerPrincipalResolver.computeJwkThumbprint(acmeKp.publicKey());
+
+            DirectoryRecordCodec codec = new DirectoryRecordCodec();
+            long nowMs = System.currentTimeMillis();
+            byte[] intKeyId = new byte[16];
+            for (int i = 0; i < 16; i++) intKeyId[i] = (byte) 0xAA;
+
+            DirectoryRecord intRecord = new DirectoryRecord(
+                    1, "intermediate", new byte[16], intKeyId,
+                    intKp.publicKey(), "sign", "active",
+                    nowMs - 86400_000, nowMs + 86400_000, nowMs - 86400_000,
+                    List.of(new RootSignature(new byte[16], new byte[64])),
+                    null, null
+            );
+            byte[] intRecordBytes = codec.encode(intRecord);
+
+            directoryRecordRepository.save(new DirectoryRecordEntity(
+                    "intermediate", UUID.randomUUID(), intKeyId,
+                    "active", Instant.ofEpochMilli(nowMs - 86400_000),
+                    Instant.ofEpochMilli(nowMs + 86400_000),
+                    Instant.ofEpochMilli(nowMs - 86400_000),
+                    new byte[16], null, intRecordBytes
+            ));
+
+            byte[] acmeKeyId = HEX.parseHex(directoryMeta.get("key_ids").get("acme_sign").asText());
+            long validFrom = directoryMeta.get("acme_signing_key_valid_from").asLong();
+            long validUntil = directoryMeta.get("acme_signing_key_valid_until").asLong();
+
+            var existingRecords = directoryRecordRepository.findActiveBySubjectId(installUuid);
+            if (existingRecords.isEmpty()) {
+                DirectoryRecord issuerRecord = new DirectoryRecord(
+                        1, "issuer", uuidToBytes(installUuid), acmeKeyId,
+                        acmeKp.publicKey(), "sign", "active",
+                        validFrom, validUntil, validFrom,
+                        Collections.emptyList(), intKeyId, new byte[64]
+                );
+                byte[] issuerRecordBytes = codec.encode(issuerRecord);
+
+                directoryRecordRepository.save(new DirectoryRecordEntity(
+                        "issuer", installUuid, acmeKeyId,
+                        "active", Instant.ofEpochMilli(validFrom),
+                        Instant.ofEpochMilli(validUntil),
+                        Instant.ofEpochMilli(validFrom),
+                        null, intKeyId, issuerRecordBytes
+                ));
+            }
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to seed test records", e);
+        }
+    }
+
+    @Test
+    void acceptsValidBearerAndEnvelope() throws Exception {
+        byte[] cborBytes = Files.readAllBytes(
+                resolveFixturesDir().resolve("envelopes/basic-1-recipient.cbor"));
+
+        String jwt = mintBearer(installUuid, installJkt, "urn:datawallet:server", 120);
+
+        MvcResult result = mvc.perform(post("/v1/entries")
+                        .header("Authorization", "Bearer " + jwt)
+                        .contentType("application/cbor")
+                        .content(cborBytes))
+                .andExpect(status().isCreated())
+                .andReturn();
+
+        JsonNode body = objectMapper.readTree(result.getResponse().getContentAsString());
+        assertThat(body.get("entry_id").asText()).isEqualTo(BASIC_ENTRY_ID);
+        assertThat(body.get("version").asInt()).isEqualTo(1);
+    }
+
+    @Test
+    void mismatchedIssuerInEnvelopeRejected() throws Exception {
+        byte[] cborBytes = Files.readAllBytes(
+                resolveFixturesDir().resolve("envelopes/basic-1-recipient.cbor"));
+
+        UUID wrongUuid = UUID.randomUUID();
+
+        DirectoryRecordCodec codec = new DirectoryRecordCodec();
+        long nowMs = System.currentTimeMillis();
+        byte[] wrongKeyId = new byte[16];
+        for (int i = 0; i < 16; i++) wrongKeyId[i] = (byte) 0xBB;
+
+        byte[] wrongSeed = new byte[32];
+        for (int i = 0; i < 32; i++) wrongSeed[i] = (byte) (i + 80);
+        Ed25519.KeyPair wrongKp = Ed25519.seedKeypair(wrongSeed);
+        String wrongJkt = BearerIssuerPrincipalResolver.computeJwkThumbprint(wrongKp.publicKey());
+
+        byte[] intKeyId = new byte[16];
+        for (int i = 0; i < 16; i++) intKeyId[i] = (byte) 0xAA;
+
+        DirectoryRecord wrongRecord = new DirectoryRecord(
+                1, "issuer", uuidToBytes(wrongUuid), wrongKeyId,
+                wrongKp.publicKey(), "sign", "active",
+                nowMs - 86400_000, nowMs + 86400_000, nowMs - 86400_000,
+                Collections.emptyList(), intKeyId, new byte[64]
+        );
+        byte[] wrongRecordBytes = codec.encode(wrongRecord);
+
+        directoryRecordRepository.save(new DirectoryRecordEntity(
+                "issuer", wrongUuid, wrongKeyId,
+                "active", Instant.ofEpochMilli(nowMs - 86400_000),
+                Instant.ofEpochMilli(nowMs + 86400_000),
+                Instant.ofEpochMilli(nowMs - 86400_000),
+                null, intKeyId, wrongRecordBytes
+        ));
+
+        String jwt = mintBearer(wrongUuid, wrongJkt, "urn:datawallet:server", 120);
+
+        mvc.perform(post("/v1/entries")
+                        .header("Authorization", "Bearer " + jwt)
+                        .contentType("application/cbor")
+                        .content(cborBytes))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("issuer_mismatch"));
+
+        directoryRecordRepository.deleteById(
+                new DirectoryRecordEntity.DirectoryRecordId("issuer", wrongUuid, wrongKeyId));
+    }
+
+    @Test
+    void replayWithinExpHits409() throws Exception {
+        byte[] cborBytes = Files.readAllBytes(
+                resolveFixturesDir().resolve("envelopes/basic-1-recipient.cbor"));
+
+        String jwt = mintBearer(installUuid, installJkt, "urn:datawallet:server", 120);
+
+        mvc.perform(post("/v1/entries")
+                        .header("Authorization", "Bearer " + jwt)
+                        .contentType("application/cbor")
+                        .content(cborBytes))
+                .andExpect(status().isCreated());
+
+        mvc.perform(post("/v1/entries")
+                        .header("Authorization", "Bearer " + jwt)
+                        .contentType("application/cbor")
+                        .content(cborBytes))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("entry_id_taken"));
+    }
+
+    @Test
+    void bearerWithMismatchedJktRejected() throws Exception {
+        byte[] cborBytes = Files.readAllBytes(
+                resolveFixturesDir().resolve("envelopes/basic-1-recipient.cbor"));
+
+        String wrongJkt = "wrong-thumbprint-value-definitely-not-matching";
+        String jwt = mintBearer(installUuid, wrongJkt, "urn:datawallet:server", 120);
+
+        mvc.perform(post("/v1/entries")
+                        .header("Authorization", "Bearer " + jwt)
+                        .contentType("application/cbor")
+                        .content(cborBytes))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void wrongAudienceRejectedAt401() throws Exception {
+        byte[] cborBytes = Files.readAllBytes(
+                resolveFixturesDir().resolve("envelopes/basic-1-recipient.cbor"));
+
+        String jwt = mintBearer(installUuid, installJkt, "urn:datawallet:wrong-server", 120);
+
+        mvc.perform(post("/v1/entries")
+                        .header("Authorization", "Bearer " + jwt)
+                        .contentType("application/cbor")
+                        .content(cborBytes))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void expiredTokenRejectedAt401() throws Exception {
+        byte[] cborBytes = Files.readAllBytes(
+                resolveFixturesDir().resolve("envelopes/basic-1-recipient.cbor"));
+
+        String jwt = mintBearerWithExplicitTimes(installUuid, installJkt, "urn:datawallet:server",
+                System.currentTimeMillis() / 1000 - 600,
+                System.currentTimeMillis() / 1000 - 300);
+
+        mvc.perform(post("/v1/entries")
+                        .header("Authorization", "Bearer " + jwt)
+                        .contentType("application/cbor")
+                        .content(cborBytes))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void lifetimeExceedsFiveMinutesRejectedAt401() throws Exception {
+        byte[] cborBytes = Files.readAllBytes(
+                resolveFixturesDir().resolve("envelopes/basic-1-recipient.cbor"));
+
+        long nowSec = System.currentTimeMillis() / 1000;
+        String jwt = mintBearerWithExplicitTimes(installUuid, installJkt, "urn:datawallet:server",
+                nowSec, nowSec + 600);
+
+        mvc.perform(post("/v1/entries")
+                        .header("Authorization", "Bearer " + jwt)
+                        .contentType("application/cbor")
+                        .content(cborBytes))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void noTokenReturns401AtFilter() throws Exception {
+        byte[] cborBytes = Files.readAllBytes(
+                resolveFixturesDir().resolve("envelopes/basic-1-recipient.cbor"));
+
+        mvc.perform(post("/v1/entries")
+                        .contentType("application/cbor")
+                        .content(cborBytes))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void rotateSigningKeyAuthenticatesUnderBearer() throws Exception {
+        UUID testIssuerId = UUID.randomUUID();
+        byte[] testKeyId = Random.bytes(16);
+
+        DirectoryRecordCodec codec = new DirectoryRecordCodec();
+        long nowMs = System.currentTimeMillis();
+        byte[] intKeyId = new byte[16];
+        for (int i = 0; i < 16; i++) intKeyId[i] = (byte) 0xAA;
+
+        byte[] issuerSeed = new byte[32];
+        for (int i = 0; i < 32; i++) issuerSeed[i] = (byte) (i + 100);
+        Ed25519.KeyPair issuerKp = Ed25519.seedKeypair(issuerSeed);
+        String issuerJkt = BearerIssuerPrincipalResolver.computeJwkThumbprint(issuerKp.publicKey());
+
+        DirectoryRecord issuerRecord = new DirectoryRecord(
+                1, "issuer", uuidToBytes(testIssuerId), testKeyId,
+                issuerKp.publicKey(), "sign", "active",
+                nowMs - 86400_000, nowMs + 86400_000, nowMs - 86400_000,
+                Collections.emptyList(), intKeyId, new byte[64]
+        );
+        byte[] issuerRecordBytes = codec.encode(issuerRecord);
+
+        directoryRecordRepository.save(new DirectoryRecordEntity(
+                "issuer", testIssuerId, testKeyId,
+                "active", Instant.ofEpochMilli(nowMs - 86400_000),
+                Instant.ofEpochMilli(nowMs + 86400_000),
+                Instant.ofEpochMilli(nowMs - 86400_000),
+                null, intKeyId, issuerRecordBytes
+        ));
+
+        String jwt = mintBearer(testIssuerId, issuerJkt, "urn:datawallet:server", 120);
+
+        String dto = """
+                {
+                  "new_public_key": "%s",
+                  "new_key_id": "%s",
+                  "old_key_id": "%s"
+                }
+                """.formatted(
+                B64URL.encodeToString(new byte[32]),
+                B64URL.encodeToString(Random.bytes(16)),
+                B64URL.encodeToString(testKeyId)
+        );
+
+        mvc.perform(post("/v1/issuers/" + testIssuerId + "/rotate-signing-key")
+                        .header("Authorization", "Bearer " + jwt)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(dto))
+                .andExpect(status().isNoContent());
+
+        directoryRecordRepository.deleteById(
+                new DirectoryRecordEntity.DirectoryRecordId("issuer", testIssuerId, testKeyId));
+    }
+
+    @Test
+    void rotateSigningKeyWithoutTokenReturns401() throws Exception {
+        String dto = """
+                {
+                  "new_public_key": "%s",
+                  "new_key_id": "%s",
+                  "old_key_id": "%s"
+                }
+                """.formatted(
+                B64URL.encodeToString(new byte[32]),
+                B64URL.encodeToString(Random.bytes(16)),
+                B64URL.encodeToString(Random.bytes(16))
+        );
+
+        mvc.perform(post("/v1/issuers/" + UUID.randomUUID() + "/rotate-signing-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(dto))
+                .andExpect(status().isUnauthorized());
+    }
+
+    private String mintBearer(UUID uuid, String jkt, String audience, long lifetimeSec) {
+        long nowSec = System.currentTimeMillis() / 1000;
+        return mintBearerWithExplicitTimes(uuid, jkt, audience, nowSec, nowSec + lifetimeSec);
+    }
+
+    private String mintBearerWithExplicitTimes(UUID uuid, String jkt, String audience,
+                                                long iatSec, long expSec) {
+        try {
+            Map<String, Object> header = new LinkedHashMap<>();
+            header.put("alg", "EdDSA");
+            header.put("typ", "JWT");
+
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("iss", "urn:datawallet:issuer:" + uuid);
+            payload.put("aud", audience);
+            payload.put("exp", expSec);
+            payload.put("iat", iatSec);
+            payload.put("cnf", Map.of("jkt", jkt));
+
+            String headerB64 = B64URL.encodeToString(JSON.writeValueAsBytes(header));
+            String payloadB64 = B64URL.encodeToString(JSON.writeValueAsBytes(payload));
+            byte[] signingInput = (headerB64 + "." + payloadB64).getBytes(StandardCharsets.US_ASCII);
+            byte[] sig = Ed25519.signDetached(intermediatePrivateKey, signingInput);
+            return headerB64 + "." + payloadB64 + "." + B64URL.encodeToString(sig);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private static Path resolveFixturesDir() {
+        Path dir = Path.of(System.getProperty("user.dir"));
+        while (dir != null) {
+            Path candidate = dir.resolve("spec/fixtures");
+            if (Files.isDirectory(candidate)) return candidate;
+            dir = dir.getParent();
+        }
+        throw new IllegalStateException("spec/fixtures not found");
+    }
+
+    private static String toUuidString(String hex) {
+        return hex.substring(0, 8) + "-" + hex.substring(8, 12) + "-"
+                + hex.substring(12, 16) + "-" + hex.substring(16, 20) + "-"
+                + hex.substring(20);
+    }
+
+    private static byte[] uuidToBytes(UUID uuid) {
+        byte[] bytes = new byte[16];
+        long msb = uuid.getMostSignificantBits();
+        long lsb = uuid.getLeastSignificantBits();
+        for (int i = 0; i < 8; i++) {
+            bytes[i] = (byte) (msb >>> (56 - i * 8));
+            bytes[i + 8] = (byte) (lsb >>> (56 - i * 8));
+        }
+        return bytes;
+    }
+}

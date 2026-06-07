@@ -1,0 +1,73 @@
+spring:
+  application:
+    name: datawallet-intermediate
+
+server:
+  port: 8444
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+  prometheus:
+    metrics:
+      export:
+        enabled: true
+
+datawallet:
+  intermediate:
+    server-url: ${PARTNERPORTAL_SERVER_URL:http://localhost:8443}
+    signer:
+      # 'soft' (default, dev/test) or 'kms' (production with GCP Cloud KMS)
+      mode: ${INTERMEDIATE_SIGNER_MODE:soft}
+      # Required when mode=soft; ignored when mode=kms
+      seed-hex: ${INTERMEDIATE_SIGNER_SEED_HEX:}
+      kms:
+        # Required when mode=kms; full CryptoKeyVersion resource name,
+        # e.g. projects/P/locations/L/keyRings/R/cryptoKeys/K/cryptoKeyVersions/V
+        # Algorithm must be EC_SIGN_ED25519.
+        key-version-name: ${INTERMEDIATE_KMS_KEY_VERSION_NAME:}
+    bearer:
+      audience: urn:datawallet:server
+    revoke:
+      # PEM truststore containing the operator-CA root used to validate the
+      # mTLS client cert presented to POST /revoke. The TLS connector
+      # (server.ssl.*) is what enforces the cert at handshake; this property
+      # documents which CA is the source of truth for that connector.
+      operator-truststore: ${INTERMEDIATE_OPERATOR_TRUSTSTORE:}
+      # Subject DN OU defense-in-depth: the X509 resolver only accepts certs
+      # whose subject contains "OU=<this value>".
+      operator-ou: operators
+      # Static bearer token for POST /revoke/trigger (account-deletion / key-compromise).
+      # Must be set in production via INTERMEDIATE_TRIGGER_TOKEN env var.
+      # Leave blank to disable the trigger endpoint (returns 401 for all callers).
+      trigger-token: ${INTERMEDIATE_TRIGGER_TOKEN:}
+    attestation:
+      mode: stub
+      play-integrity:
+        package-name: ""
+        decryption-key-secret: ""
+      app-attest:
+        team-id: ""
+        bundle-id: ""
+    republish:
+      interval-ms: 302400000
+      batch-size: 50
+    denylist:
+      refresh-interval-seconds: 60
+      max-staleness-seconds: 600
+    ratelimit:
+      enroll:
+        # Burst capacity for per-IP token bucket on POST /enroll
+        per-ip-capacity: 5
+        # Sustained rate: tokens refilled per minute per IP
+        per-ip-refill-per-minute: 10
+      token:
+        # Burst capacity for per-IP token bucket on POST /token
+        per-ip-capacity: 20
+        # Sustained rate: tokens refilled per minute per IP
+        per-ip-refill-per-minute: 60
