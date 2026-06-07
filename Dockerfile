@@ -44,6 +44,16 @@ jdk.jdwp.agent,jdk.management,jdk.unsupported \
 FROM gcr.io/distroless/java-base-debian12:nonroot AS server
 COPY --from=jre /opt/jre /opt/jre
 COPY --from=build-server /build/target/partnerportal-*.jar /app/app.jar
+ARG app_version=0.0.0-dev
+ARG githash=unknown
+ARG gitbranch=unknown
+ARG builddate=1970-01-01T00:00:00Z
+LABEL org.opencontainers.image.title="egnedata-partnerportal/server" \
+      org.opencontainers.image.version="${app_version}" \
+      org.opencontainers.image.revision="${githash}" \
+      org.opencontainers.image.ref.name="${gitbranch}" \
+      org.opencontainers.image.created="${builddate}" \
+      org.opencontainers.image.vendor="EgneData"
 USER nonroot:nonroot
 EXPOSE 8443
 ENTRYPOINT ["/opt/jre/bin/java", "-jar", "/app/app.jar"]
@@ -52,6 +62,16 @@ ENTRYPOINT ["/opt/jre/bin/java", "-jar", "/app/app.jar"]
 FROM gcr.io/distroless/java-base-debian12:nonroot AS intermediate
 COPY --from=jre /opt/jre /opt/jre
 COPY --from=build-intermediate /build/intermediate/target/datawallet-intermediate-*.jar /app/app.jar
+ARG app_version=0.0.0-dev
+ARG githash=unknown
+ARG gitbranch=unknown
+ARG builddate=1970-01-01T00:00:00Z
+LABEL org.opencontainers.image.title="egnedata-partnerportal/intermediate" \
+      org.opencontainers.image.version="${app_version}" \
+      org.opencontainers.image.revision="${githash}" \
+      org.opencontainers.image.ref.name="${gitbranch}" \
+      org.opencontainers.image.created="${builddate}" \
+      org.opencontainers.image.vendor="EgneData"
 USER nonroot:nonroot
 EXPOSE 8444
 ENTRYPOINT ["/opt/jre/bin/java", "-jar", "/app/app.jar"]
