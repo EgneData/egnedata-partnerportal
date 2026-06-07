@@ -36,3 +36,6 @@ if [ -f client/pubspec.yaml ]; then
     echo "--- Flutter test phase ---"
     (cd client && flutter pub get && flutter test)
 fi
+
+echo "--- Bats unit tests ---"
+bats bats/image_ref.bats

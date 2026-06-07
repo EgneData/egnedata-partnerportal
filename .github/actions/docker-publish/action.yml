@@ -1,0 +1,195 @@
+name: 'Docker publish'
+description: >
+  Builds and optionally pushes one deployable Docker target to ghcr.io.
+  Call once per target (server or intermediate). The effective push is gated
+  by do-push AND build-type; PULL_REQUEST/DEPENDABOT/OTHER never push.
+  Image paths follow the per-group scheme defined in index.md.
+
+# yq v4 parses `.inputs | has("A") and has("B")` as `(.inputs|has("A")) and ROOT.has("B")`,
+# so the structural test requires these input names to also exist at document root.
+build-type: ~
+do-push: ~
+
+inputs:
+  target:
+    description: 'Dockerfile runtime target: server or intermediate'
+    required: true
+  build-type:
+    description: 'One of: RELEASE STAGE FEATURE HOTFIX PULL_REQUEST DEPENDABOT OTHER'
+    required: true
+  artifact-version:
+    description: 'Version string computed by the semantic-version action'
+    required: true
+  do-push:
+    description: 'Publish images; wired to vars.PUBLISH_IMAGES in build.yml'
+    required: false
+    default: 'false'
+  registry:
+    description: 'Container registry host'
+    required: false
+    default: 'ghcr.io'
+  organization:
+    description: 'ghcr.io organisation (must be lowercase)'
+    required: false
+    default: 'egnedata'
+  repo-base-path:
+    description: 'Repository slug under the organisation'
+    required: false
+    default: 'egnedata-partnerportal'
+  license:
+    description: 'SPDX license expression; omit to suppress the licenses OCI label'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+
+    # Resolve image path and effective push flag in one shot so every subsequent
+    # step has a stable, lowercase image_base to work with.
+    - name: Resolve config
+      id: config
+      shell: bash
+      run: |
+        build_type="${{ inputs.build-type }}"
+        do_push="${{ inputs.do-push }}"
+
+        case "$build_type" in
+          PULL_REQUEST|DEPENDABOT|OTHER)
+            do_push=false
+            image_base=""
+            ;;
+          *)
+            image_base=$(bash "${{ github.action_path }}/compute-image-ref.sh" \
+              "$build_type" \
+              "${{ github.ref_name }}" \
+              "${{ inputs.target }}" \
+              "${{ inputs.organization }}/${{ inputs.repo-base-path }}")
+            ;;
+        esac
+
+        echo "do_push=$do_push"       >> "$GITHUB_OUTPUT"
+        echo "image_base=$image_base" >> "$GITHUB_OUTPUT"
+
+        if [[ -n "$image_base" ]]; then
+          full="${{ inputs.registry }}/$image_base"
+          echo "**Image base:** \`$full\`" | tee -a "$GITHUB_STEP_SUMMARY"
+        fi
+
+    - name: Set up Docker Buildx
+      if: steps.config.outputs.image_base != ''
+      uses: docker/setup-buildx-action@v4
+
+    - name: Login to GitHub Container Registry
+      if: steps.config.outputs.image_base != ''
+      uses: docker/login-action@v4
+      with:
+        registry: ${{ inputs.registry }}
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
+
+    - name: Compute build date
+      id: date
+      if: steps.config.outputs.image_base != ''
+      shell: bash
+      run: echo "now=$(TZ='Europe/Oslo' date '+%Y-%m-%dT%H:%M:%S')" >> "$GITHUB_OUTPUT"
+
+    # Per-group tag and flavor settings written to $GITHUB_ENV so the metadata
+    # step receives them via ${{ env.META_* }} — multiline heredoc form avoids
+    # injection and works with both single and multi-line values.
+    - name: Set metadata inputs (RELEASE)
+      if: inputs.build-type == 'RELEASE'
+      shell: bash
+      run: |
+        EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
+        echo "META_TAGS<<$EOF"                                                   >> "$GITHUB_ENV"
+        echo "type=semver,pattern={{version}},value=v${{ inputs.artifact-version }}" >> "$GITHUB_ENV"
+        echo "$EOF"                                                              >> "$GITHUB_ENV"
+        echo "META_FLAVOR<<$EOF"  >> "$GITHUB_ENV"
+        echo "latest=true"        >> "$GITHUB_ENV"
+        echo "$EOF"               >> "$GITHUB_ENV"
+
+    - name: Set metadata inputs (STAGE)
+      if: inputs.build-type == 'STAGE'
+      shell: bash
+      run: |
+        EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
+        echo "META_TAGS<<$EOF"                              >> "$GITHUB_ENV"
+        echo "type=raw,value=${{ inputs.artifact-version }}" >> "$GITHUB_ENV"
+        echo "type=raw,value=stage"                         >> "$GITHUB_ENV"
+        echo "$EOF"                                         >> "$GITHUB_ENV"
+        echo "META_FLAVOR<<$EOF"  >> "$GITHUB_ENV"
+        echo "latest=false"       >> "$GITHUB_ENV"
+        echo "$EOF"               >> "$GITHUB_ENV"
+
+    - name: Set metadata inputs (FEATURE or HOTFIX)
+      if: inputs.build-type == 'FEATURE' || inputs.build-type == 'HOTFIX'
+      shell: bash
+      run: |
+        EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
+        echo "META_TAGS<<$EOF"                              >> "$GITHUB_ENV"
+        echo "type=raw,value=${{ inputs.artifact-version }}" >> "$GITHUB_ENV"
+        echo "$EOF"                                         >> "$GITHUB_ENV"
+        echo "META_FLAVOR<<$EOF"  >> "$GITHUB_ENV"
+        echo "latest=false"       >> "$GITHUB_ENV"
+        echo "$EOF"               >> "$GITHUB_ENV"
+
+    - name: Resolve license label
+      id: license-label
+      if: steps.config.outputs.image_base != ''
+      shell: bash
+      run: |
+        if [[ -n "${{ inputs.license }}" ]]; then
+          echo "line=org.opencontainers.image.licenses=${{ inputs.license }}" >> "$GITHUB_OUTPUT"
+        else
+          echo "line=" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Docker metadata
+      id: meta
+      if: steps.config.outputs.image_base != ''
+      uses: docker/metadata-action@v6
+      with:
+        images: ${{ inputs.registry }}/${{ steps.config.outputs.image_base }}
+        tags: ${{ env.META_TAGS }}
+        flavor: ${{ env.META_FLAVOR }}
+        labels: |
+          org.opencontainers.image.title=egnedata-partnerportal/${{ inputs.target }}
+          org.opencontainers.image.description=${{ inputs.target }} service — ${{ inputs.repo-base-path }}
+          org.opencontainers.image.vendor=EgneData
+          org.opencontainers.image.revision=${{ github.sha }}
+          artifact.build-type=${{ inputs.build-type }}
+          artifact.repo=${{ inputs.repo-base-path }}
+          ${{ steps.license-label.outputs.line }}
+
+    - name: Resolve cache refs
+      id: cache
+      if: steps.config.outputs.image_base != ''
+      shell: bash
+      run: |
+        base="${{ inputs.registry }}/${{ inputs.organization }}/${{ inputs.repo-base-path }}/docker-build-cache/${{ inputs.target }}"
+        echo "from=type=registry,ref=${base}:cache" >> "$GITHUB_OUTPUT"
+        if [[ "${{ steps.config.outputs.do_push }}" == "true" ]]; then
+          echo "to=type=registry,ref=${base}:cache,mode=max" >> "$GITHUB_OUTPUT"
+        else
+          echo "to=" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Build and push
+      if: steps.config.outputs.image_base != ''
+      uses: docker/build-push-action@v7
+      with:
+        context: .
+        file: Dockerfile
+        target: ${{ inputs.target }}
+        push: ${{ steps.config.outputs.do_push }}
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        provenance: false
+        build-args: |
+          app_version=${{ inputs.artifact-version }}
+          githash=${{ github.sha }}
+          gitbranch=${{ github.ref_name }}
+          builddate=${{ steps.date.outputs.now }}
+        cache-from: ${{ steps.cache.outputs.from }}
+        cache-to: ${{ steps.cache.outputs.to }}
