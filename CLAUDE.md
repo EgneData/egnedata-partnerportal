@@ -92,6 +92,8 @@ See `docs/specs/plan.md` "Out of Scope" for rationale.
 | Branch/version/release model | `docs/branch-version-release.md` |
 | Gated build/tag/publish pipeline (`ci.yml` retired here) | `.github/workflows/build.yml` |
 | Composite actions (semver, tag, docker, dockerhub-mirror) | `.github/actions/{semantic-version,tag-release,docker-publish,dockerhub-mirror}/` |
+| GHCR cleanup (nightly orphans + on branch delete) | `.github/workflows/ghcr-prune-{orphans,deleted-branch}.yml` |
+| Package-prune scripts + shared slug sanitizer | `.github/scripts/{prune-orphan-packages,prune-branch-packages,lib-sanitize}.sh` |
 | Release merge script | `bin/release_to_main.sh` |
 | Feature-path CI dry run | `bin/ci-dry-run.sh` |
 

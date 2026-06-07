@@ -1,0 +1,30 @@
+name: Prune GHCR packages for deleted branch
+
+# When a feature/hotfix branch is deleted, remove its container packages
+# immediately. The nightly orphan sweep is the backstop for missed events.
+#
+# Note: `delete` events run the workflow definition from the default branch, so
+# this only takes effect once merged to main.
+
+on:
+  delete:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  prune:
+    name: Prune packages for ${{ github.event.ref }}
+    if: github.event.ref_type == 'branch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Delete packages for the deleted branch
+        env:
+          GH_TOKEN: ${{ secrets.GHCR_CLEANUP_TOKEN || github.token }}
+          ORG: ${{ github.repository_owner }}
+          REPO_BASE: egnedata-partnerportal
+          DELETED_REF: ${{ github.event.ref }}
+        run: bash .github/scripts/prune-branch-packages.sh

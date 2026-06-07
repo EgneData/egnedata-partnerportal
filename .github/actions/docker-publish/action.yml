@@ -41,6 +41,14 @@ inputs:
     required: false
     default: ''
 
+outputs:
+  package-name:
+    description: >
+      GHCR package name (image path under the organisation, no registry/tag).
+      Empty for non-publishing build-types. Consumers use it to prune old
+      versions of the package that was just pushed.
+    value: ${{ steps.config.outputs.package_name }}
+
 runs:
   using: composite
   steps:
@@ -68,8 +76,14 @@ runs:
             ;;
         esac
 
-        echo "do_push=$do_push"       >> "$GITHUB_OUTPUT"
-        echo "image_base=$image_base" >> "$GITHUB_OUTPUT"
+        # package_name is image_base without the leading "<organization>/" — the
+        # form the GHCR packages REST API expects (owner is passed separately).
+        package_name="${image_base#${{ inputs.organization }}/}"
+        [[ "$image_base" == "$package_name" ]] && package_name=""
+
+        echo "do_push=$do_push"           >> "$GITHUB_OUTPUT"
+        echo "image_base=$image_base"     >> "$GITHUB_OUTPUT"
+        echo "package_name=$package_name" >> "$GITHUB_OUTPUT"
 
         if [[ -n "$image_base" ]]; then
           full="${{ inputs.registry }}/$image_base"

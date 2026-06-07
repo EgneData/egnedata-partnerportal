@@ -1,0 +1,39 @@
+name: Prune orphaned GHCR packages
+
+# Nightly sweep: delete feature/hotfix container packages whose source branch no
+# longer exists. Safety net for branches deleted before the on-delete workflow
+# existed, or whose delete event was missed.
+
+on:
+  schedule:
+    - cron: '17 3 * * *'   # 03:17 UTC nightly
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Log intended deletions without performing them'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ghcr-prune-orphans
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    name: Prune orphaned packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Prune packages with no matching branch
+        env:
+          GH_TOKEN: ${{ secrets.GHCR_CLEANUP_TOKEN || github.token }}
+          ORG: ${{ github.repository_owner }}
+          REPO_BASE: egnedata-partnerportal
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+        run: bash .github/scripts/prune-orphan-packages.sh
