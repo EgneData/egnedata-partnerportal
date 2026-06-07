@@ -8,6 +8,8 @@ on:
       - 'docs/**'
       - '.gitignore'
       - '.idea/**'
+      - '.claude'
+      - '.github/workflows/release-to-main.ymlh'
   pull_request:
   workflow_dispatch:
     inputs:
@@ -95,7 +97,7 @@ jobs:
           key: ${{ steps.maven-cache.outputs.cache-primary-key }}
 
       - name: Upload JAR
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: partnerportal-jar
           path: target/partnerportal-*.jar
@@ -104,7 +106,7 @@ jobs:
 
       - name: Upload surefire reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: surefire-reports
           path: target/surefire-reports/
@@ -145,7 +147,7 @@ jobs:
 
       - name: Upload surefire reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: intermediate-surefire-reports
           path: intermediate/target/surefire-reports/
@@ -217,7 +219,7 @@ jobs:
             ${{ runner.os }}-maven-
 
       - name: Download JAR
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: partnerportal-jar
           path: target/
@@ -247,7 +249,7 @@ jobs:
 
       - name: Upload BATS logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bats-logs
           path: target/batstest/logs/
