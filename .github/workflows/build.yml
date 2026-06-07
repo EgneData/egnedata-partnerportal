@@ -1,0 +1,334 @@
+name: Build
+
+on:
+  push:
+    branches: ['**']
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.gitignore'
+      - '.idea/**'
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Explicit release version (overrides computed)'
+        required: false
+        type: string
+      dry_run:
+        description: 'Dry run — skip actual publish'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_name != 'main' }}
+
+jobs:
+
+  classify:
+    name: Classify branch
+    runs-on: ubuntu-latest
+    outputs:
+      build-type: ${{ steps.classify.outputs.build_type }}
+    steps:
+      - name: Classify
+        id: classify
+        shell: bash
+        run: |
+          ref="${{ github.ref_name }}"
+          event="${{ github.event_name }}"
+
+          if [[ "$event" == "pull_request" ]]; then
+            echo "build_type=PULL_REQUEST" >> "$GITHUB_OUTPUT"
+          elif [[ "$ref" == "main" ]]; then
+            echo "build_type=RELEASE" >> "$GITHUB_OUTPUT"
+          elif [[ "$ref" == "develop" ]]; then
+            echo "build_type=STAGE" >> "$GITHUB_OUTPUT"
+          elif [[ "$ref" == feature/* ]]; then
+            echo "build_type=FEATURE" >> "$GITHUB_OUTPUT"
+          elif [[ "$ref" == hotfix/* ]]; then
+            echo "build_type=HOTFIX" >> "$GITHUB_OUTPUT"
+          elif [[ "$ref" == dependabot/* ]]; then
+            echo "build_type=DEPENDABOT" >> "$GITHUB_OUTPUT"
+          else
+            echo "build_type=OTHER" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "**Build type:** \`$(cat "$GITHUB_OUTPUT" | grep build_type | cut -d= -f2)\`" >> "$GITHUB_STEP_SUMMARY"
+
+  test-server:
+    name: Server build & test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-java@v5
+        with:
+          java-version-file: '.sdkmanrc'
+          distribution: 'temurin'
+
+      - name: Restore Maven repository
+        id: maven-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ github.ref_name }}-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-${{ github.ref_name }}-
+            ${{ runner.os }}-maven-main-
+            ${{ runner.os }}-maven-
+
+      - name: mvn verify
+        run: mvn -B verify --no-transfer-progress
+
+      - name: Save Maven repository
+        if: always() && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.m2/repository
+          key: ${{ steps.maven-cache.outputs.cache-primary-key }}
+
+      - name: Upload JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: partnerportal-jar
+          path: target/partnerportal-*.jar
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload surefire reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports
+          path: target/surefire-reports/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  test-intermediate:
+    name: Intermediate build & test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-java@v5
+        with:
+          java-version-file: '.sdkmanrc'
+          distribution: 'temurin'
+
+      - name: Restore Maven repository
+        id: maven-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ github.ref_name }}-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-${{ github.ref_name }}-
+            ${{ runner.os }}-maven-main-
+            ${{ runner.os }}-maven-
+
+      - name: mvn verify (intermediate)
+        run: mvn -B -f intermediate/pom.xml verify --no-transfer-progress
+
+      - name: Save Maven repository
+        if: always() && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.m2/repository
+          key: ${{ steps.maven-cache.outputs.cache-primary-key }}
+
+      - name: Upload surefire reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: intermediate-surefire-reports
+          path: intermediate/target/surefire-reports/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  test-flutter:
+    name: Flutter test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Restore pub packages
+        id: pub-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.pub-cache
+            client/.dart_tool
+          key: ${{ runner.os }}-pub-${{ github.ref_name }}-${{ hashFiles('client/pubspec.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pub-${{ github.ref_name }}-
+            ${{ runner.os }}-pub-main-
+            ${{ runner.os }}-pub-
+
+      - name: flutter pub get
+        working-directory: client
+        run: flutter pub get
+
+      - name: flutter test
+        working-directory: client
+        run: flutter test
+
+      - name: Save pub packages
+        if: always() && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            ~/.pub-cache
+            client/.dart_tool
+          key: ${{ steps.pub-cache.outputs.cache-primary-key }}
+
+  test-bats:
+    name: BATS end-to-end
+    runs-on: ubuntu-latest
+    needs: [test-server, test-intermediate]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version-file: '.sdkmanrc'
+
+      - name: Restore Maven repository
+        id: maven-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ github.ref_name }}-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-${{ github.ref_name }}-
+            ${{ runner.os }}-maven-main-
+            ${{ runner.os }}-maven-
+
+      - name: Download JAR
+        uses: actions/download-artifact@v4
+        with:
+          name: partnerportal-jar
+          path: target/
+
+      - name: Restore bats helper libraries
+        id: cache-bats
+        uses: actions/cache/restore@v5
+        with:
+          path: /usr/local/lib/bats
+          key: ${{ runner.os }}-bats-libs-v1
+          restore-keys: |
+            ${{ runner.os }}-bats-libs-
+
+      - name: Install bats and helper libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bats
+          if [ ! -d /usr/local/lib/bats/bats-support ]; then
+            sudo mkdir -p /usr/local/lib/bats
+            sudo git clone --depth 1 https://github.com/bats-core/bats-support.git /usr/local/lib/bats/bats-support
+            sudo git clone --depth 1 https://github.com/bats-core/bats-assert.git  /usr/local/lib/bats/bats-assert
+            sudo git clone --depth 1 https://github.com/bats-core/bats-file.git    /usr/local/lib/bats/bats-file
+          fi
+
+      - name: Run BATS suite
+        run: bash bin/start-e2e.sh
+
+      - name: Upload BATS logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bats-logs
+          path: target/batstest/logs/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Save Maven repository
+        if: always() && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.m2/repository
+          key: ${{ steps.maven-cache.outputs.cache-primary-key }}
+
+      - name: Save bats helper libraries
+        if: always() && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v5
+        with:
+          path: /usr/local/lib/bats
+          key: ${{ steps.cache-bats.outputs.cache-primary-key }}
+
+  compute-version:
+    name: Compute version
+    runs-on: ubuntu-latest
+    needs: classify
+    outputs:
+      version: ${{ steps.version.outputs.new-version-nr }}
+      git-tag: ${{ steps.version.outputs.new-version-git-tag }}
+      head-already-tagged: ${{ steps.version.outputs.head-already-tagged }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Compute version
+        id: version
+        uses: ./.github/actions/semantic-version
+        with:
+          build-type: ${{ needs.classify.outputs.build-type }}
+
+  tag-release:
+    name: Tag release
+    runs-on: ubuntu-latest
+    needs: [classify, test-server, test-intermediate, test-flutter, test-bats, compute-version]
+    if: needs.classify.outputs.build-type == 'RELEASE'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Tag release
+        uses: ./.github/actions/tag-release
+        with:
+          new-version-git-tag: ${{ needs.compute-version.outputs.git-tag }}
+          head-already-tagged: ${{ needs.compute-version.outputs.head-already-tagged }}
+
+  publish:
+    name: Publish ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    needs: [classify, test-server, test-intermediate, test-flutter, test-bats, compute-version, tag-release]
+    if: >-
+      always() &&
+      !cancelled() &&
+      needs.test-server.result == 'success' &&
+      needs.test-intermediate.result == 'success' &&
+      needs.test-flutter.result == 'success' &&
+      needs.test-bats.result == 'success' &&
+      needs.compute-version.result == 'success' &&
+      (needs.tag-release.result == 'success' || needs.tag-release.result == 'skipped') &&
+      contains(fromJSON('["RELEASE","STAGE","FEATURE","HOTFIX"]'), needs.classify.outputs.build-type)
+    strategy:
+      matrix:
+        target: [server, intermediate]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Publish
+        uses: ./.github/actions/docker-publish
+        with:
+          target: ${{ matrix.target }}
+          build-type: ${{ needs.classify.outputs.build-type }}
+          artifact-version: ${{ needs.compute-version.outputs.version }}
+          do-push: ${{ vars.PUBLISH_IMAGES == 'true' && inputs.dry_run != true }}
