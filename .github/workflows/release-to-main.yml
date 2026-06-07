@@ -1,0 +1,72 @@
+name: Release to Main
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (show what would be done without making changes)'
+        required: false
+        type: boolean
+        default: false
+      version:
+        description: 'Informational: expected release version (e.g. v1.7.0) — shown in summary only'
+        required: false
+        type: string
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/develop'
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: develop
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Set up local main branch
+        run: git branch main origin/main
+
+      - name: Run release script
+        run: |
+          set -o pipefail
+          chmod +x bin/release_to_main.sh
+
+          ARGS="--yes"
+          if [[ "${{ inputs.dry_run }}" == "true" ]]; then
+            ARGS="$ARGS --dry-run"
+          fi
+
+          OUTPUT=$(bin/release_to_main.sh $ARGS 2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
+          echo "$OUTPUT"
+
+          {
+            echo "## Release to Main"
+            echo ""
+            if [[ -n "${{ inputs.version }}" ]]; then
+              echo "**Expected version:** \`${{ inputs.version }}\`"
+              echo ""
+            fi
+            if [[ "${{ inputs.dry_run }}" == "true" ]]; then
+              echo "🔍 **Dry Run** — no changes made"
+            elif [[ $EXIT_CODE -eq 0 ]]; then
+              echo "✅ **Merged** develop → main; build pipeline will tag after the gate"
+            else
+              echo "❌ **Failed** to merge"
+            fi
+            echo ""
+            echo '```'
+            echo "$OUTPUT"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          exit $EXIT_CODE

@@ -39,3 +39,4 @@ fi
 
 echo "--- Bats unit tests ---"
 bats bats/image_ref.bats
+bats bats/release_to_main.bats
