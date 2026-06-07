@@ -89,6 +89,11 @@ See `docs/specs/plan.md` "Out of Scope" for rationale.
 | Reference generator | `spec/tools/gen.py` |
 | Spec docs | `docs/specs/{plan,api,crypto-formats,fixtures}.md` |
 | Implementation handoff | `docs/handoff.md` |
+| Branch/version/release model | `docs/branch-version-release.md` |
+| Gated build/tag/publish pipeline (`ci.yml` retired here) | `.github/workflows/build.yml` |
+| Composite actions (semver, tag, docker) | `.github/actions/{semantic-version,tag-release,docker-publish}/` |
+| Release merge script | `bin/release_to_main.sh` |
+| Feature-path CI dry run | `bin/ci-dry-run.sh` |
 
 ## Common workflows
 
