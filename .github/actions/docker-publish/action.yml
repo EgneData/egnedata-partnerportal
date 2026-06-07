@@ -131,7 +131,7 @@ runs:
         echo "type=raw,value=${{ inputs.artifact-version }}" >> "$GITHUB_ENV"
         echo "$EOF"                                         >> "$GITHUB_ENV"
         echo "META_FLAVOR<<$EOF"  >> "$GITHUB_ENV"
-        echo "latest=false"       >> "$GITHUB_ENV"
+        echo "latest=true"        >> "$GITHUB_ENV"
         echo "$EOF"               >> "$GITHUB_ENV"
 
     - name: Resolve license label

@@ -19,21 +19,15 @@ setup() {
   assert_output "$B/stage/intermediate"
 }
 
-@test "feature path is lowercased, prefix-stripped, hash-suffixed" {
+@test "feature path is lowercased and prefix-stripped" {
   run bash "$H" FEATURE feature/Add-Login server "$B"
-  assert_output --regexp "^$B/features/add-login-[0-9a-f]{7}/server$"
+  assert_output "$B/features/add-login/server"
   refute_output --partial "feature/feature"
 }
 
 @test "hotfix path uses its own group" {
   run bash "$H" HOTFIX hotfix/CVE-123 server "$B"
-  assert_output --regexp "^$B/hotfix/cve-123-[0-9a-f]{7}/server$"
-}
-
-@test "sanitize collisions stay unique via ref hash" {
-  run bash "$H" FEATURE feature/foo/bar server "$B"; a="$output"
-  run bash "$H" FEATURE feature/foo-bar server "$B"; b="$output"
-  assert_not_equal "$a" "$b"
+  assert_output "$B/hotfix/cve-123/server"
 }
 
 @test "non-publishing build-types fail" {

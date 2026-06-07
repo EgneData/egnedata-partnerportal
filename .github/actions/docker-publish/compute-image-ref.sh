@@ -9,9 +9,6 @@ ref="$2"
 target="$3"
 repo_base="$4"
 
-# Hash of the original ref ensures two branches that sanitize identically stay unique.
-refhash=$(printf '%s' "$ref" | sha1sum | cut -c1-7)
-
 # Strip prefix, lowercase, replace invalid chars, collapse repeated separators,
 # trim leading/trailing separators, truncate to 100 chars.
 sanitize() {
@@ -33,11 +30,11 @@ case "$build_type" in
     ;;
   FEATURE)
     san=$(sanitize "${ref#feature/}")
-    result="${repo_base}/features/${san}-${refhash}/${target}"
+    result="${repo_base}/features/${san}/${target}"
     ;;
   HOTFIX)
     san=$(sanitize "${ref#hotfix/}")
-    result="${repo_base}/hotfix/${san}-${refhash}/${target}"
+    result="${repo_base}/hotfix/${san}/${target}"
     ;;
   PULL_REQUEST|DEPENDABOT|OTHER)
     exit 1

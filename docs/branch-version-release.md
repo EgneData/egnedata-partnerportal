@@ -86,12 +86,12 @@ build: `server` (port 8443) and `intermediate` (port 8444), both from the single
 |------------|---------------------------------------------------------------------|------------|
 | `RELEASE`  | `release/{server,intermediate}:<version>`                           | `latest`   |
 | `STAGE`    | `stage/{server,intermediate}:<version>`                             | `stage`    |
-| `FEATURE`  | `features/<sanitized-branch>-<7hex>/{server,intermediate}:<version>` | none      |
-| `HOTFIX`   | `hotfix/<sanitized-branch>-<7hex>/{server,intermediate}:<version>`  | none       |
+| `FEATURE`  | `features/<sanitized-branch>/{server,intermediate}:<version>`        | `latest`  |
+| `HOTFIX`   | `hotfix/<sanitized-branch>/{server,intermediate}:<version>`         | `latest`   |
 
 Branch sanitization: strip the `feature/`/`hotfix/` prefix, lowercase, replace invalid chars
-with `-`, collapse runs, trim to ~100 chars, and append a 7-char SHA1 of the full ref for
-uniqueness.
+with `-`, collapse runs, and trim to ~100 chars. Branches that sanitize to the same string
+share an image path.
 
 Example release ref: `ghcr.io/egnedata/egnedata-partnerportal/release/server:1.7.0`
 
@@ -147,7 +147,7 @@ and `:latest`.
 
 [`bin/ci-dry-run.sh`](../bin/ci-dry-run.sh) pushes a probe commit to a throwaway
 `feature/ci-dry-run-<sha>` branch, watches the `build.yml` run, and asserts the publish job
-computed the correct `features/<sanitized>-<7hex>/{server,intermediate}` image path — without
+computed the correct `features/<sanitized>/{server,intermediate}` image path — without
 writing anything to the registry (`PUBLISH_IMAGES` must be unset/false).
 
 ```sh

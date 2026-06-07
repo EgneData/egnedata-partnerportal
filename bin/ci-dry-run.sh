@@ -71,8 +71,8 @@ fi
 
 echo "=== asserting feature image path in publish job log ==="
 LOG=$(env -u GH_TOKEN -u GITHUB_TOKEN gh run view "$RID" --log)
-if ! echo "$LOG" | grep -Eq 'features/.+-[0-9a-f]{7}/(server|intermediate)'; then
-  echo "ERROR: expected hashed feature image path not found in run log" >&2
+if ! echo "$LOG" | grep -Eq 'features/[^/]+/(server|intermediate)'; then
+  echo "ERROR: expected feature image path not found in run log" >&2
   echo "Remote branch $FB left for debugging."
   exit 1
 fi
